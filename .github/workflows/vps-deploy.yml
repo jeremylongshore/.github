@@ -141,10 +141,14 @@ jobs:
           echo "${{ secrets.VPS_HOST_KEY }}" > ~/.ssh/known_hosts
           chmod 644 ~/.ssh/known_hosts
           install -m 600 /dev/stdin ~/.ssh/id_ed25519 <<< "${{ secrets.VPS_DEPLOY_KEY }}"
-          # Debug: confirm secrets arrived (sizes only, no values revealed)
+          # Debug: confirm secrets arrived (no values revealed, only the
+          # first field of each line — that's the hostname/hash prefix
+          # which is not secret).
           echo "::group::Secret-arrival debug"
           echo "known_hosts bytes: $(wc -c < ~/.ssh/known_hosts)"
-          echo "known_hosts has intentsolutions line: $(grep -c '^intentsolutions ' ~/.ssh/known_hosts || true)"
+          echo "known_hosts line count: $(wc -l < ~/.ssh/known_hosts)"
+          echo "known_hosts hostname-field per line:"
+          awk '{print "  line "NR": ["$1"]"}' ~/.ssh/known_hosts | head -10
           echo "id_ed25519 bytes: $(wc -c < ~/.ssh/id_ed25519)"
           echo "id_ed25519 first line check: $(head -1 ~/.ssh/id_ed25519 | grep -c BEGIN || true)"
           echo "::endgroup::"
