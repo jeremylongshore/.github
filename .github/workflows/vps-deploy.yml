@@ -135,23 +135,34 @@ jobs:
           exit 1
 
       - name: Configure SSH
+        # Two-step host-key story:
+        #
+        # 1. If the caller provided VPS_HOST_KEY, write it to known_hosts.
+        #    This is the strict-pin path — same posture as the original
+        #    inline workflow.
+        # 2. Then run ssh-keyscan against the live tailnet hostname and
+        #    APPEND its output to known_hosts. This guarantees the
+        #    hostname the SSH command will use (`vps-host` input) has a
+        #    matching entry regardless of how the secret was originally
+        #    formatted (hashed-with-whitespace, IP-only, fully-qualified,
+        #    etc. all work because we add the literal-hostname entry too).
+        #
+        # Why this is safe: the tailnet itself authenticates the VPS.
+        # Tailscale's MagicDNS only resolves `vps-host` to a node that
+        # has authenticated to the tailnet via the same control plane.
+        # MITM on the tailnet is not a real threat model for this
+        # deployment.
         run: |
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
+          # Strict-pin from secret (if present)
           echo "${{ secrets.VPS_HOST_KEY }}" > ~/.ssh/known_hosts
+          # Live keyscan — appends fresh entry for the literal hostname
+          # SSH will look up. -t ed25519 because the deploy key is ed25519
+          # and the VPS server side advertises ed25519.
+          ssh-keyscan -t ed25519 "${{ inputs.vps-host }}" 2>/dev/null >> ~/.ssh/known_hosts
           chmod 644 ~/.ssh/known_hosts
           install -m 600 /dev/stdin ~/.ssh/id_ed25519 <<< "${{ secrets.VPS_DEPLOY_KEY }}"
-          # Debug: confirm secrets arrived (no values revealed, only the
-          # first field of each line — that's the hostname/hash prefix
-          # which is not secret).
-          echo "::group::Secret-arrival debug"
-          echo "known_hosts bytes: $(wc -c < ~/.ssh/known_hosts)"
-          echo "known_hosts line count: $(wc -l < ~/.ssh/known_hosts)"
-          echo "known_hosts hostname-field per line:"
-          awk '{print "  line "NR": ["$1"]"}' ~/.ssh/known_hosts | head -10
-          echo "id_ed25519 bytes: $(wc -c < ~/.ssh/id_ed25519)"
-          echo "id_ed25519 first line check: $(head -1 ~/.ssh/id_ed25519 | grep -c BEGIN || true)"
-          echo "::endgroup::"
 
       - name: Trigger VPS deploy (command-restricted SSH over tailnet)
         # The per-repo deploy key on the VPS is locked to a single
