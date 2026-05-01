@@ -1,0 +1,219 @@
+name: vps-deploy (reusable)
+
+# Reusable VPS-deploy workflow for jeremylongshore/* repos.
+#
+# This is the canonical deploy template adopted by Priority 5 of the
+# VPS-as-the-home program (intentsolutions-vps-runbook OPS-g6a).
+#
+# Calling pattern (in your repo's `.github/workflows/deploy.yml`):
+#
+#   name: Deploy
+#   on:
+#     push:
+#       branches: [main]
+#     workflow_dispatch: {}
+#
+#   permissions:
+#     contents: read
+#     id-token: write   # REQUIRED — Tailscale OIDC token request
+#
+#   concurrency:
+#     group: deploy-vps-${{ github.repository }}
+#     cancel-in-progress: false
+#
+#   jobs:
+#     test:                    # MANDATORY — pre-deploy gate
+#       runs-on: ubuntu-latest
+#       steps:
+#         - uses: actions/checkout@v4
+#         - run: <repo's test command, e.g. pnpm test --run>
+#
+#     deploy:
+#       needs: test            # MANDATORY — gates on tests passing
+#       uses: jeremylongshore/.github/.github/workflows/vps-deploy.yml@<40-char SHA>
+#       with:
+#         variant:           docker    # docker | static
+#         srv-path:          /srv/code/myapp
+#         health-check-url:  https://example.com/api/health
+#         vps-tailnet-ip:    100.88.144.55   # tailnet IP of the VPS
+#         vps-public-ip:     167.86.106.29   # used for Caddy --resolve verification
+#         vps-host:          intentsolutions  # tailnet MagicDNS name
+#         vps-user:          intentsolutions  # OS user on VPS
+#         smoke-validation:  '.status == "ok"'   # jq filter on health response
+#       secrets: inherit
+#
+# Pin by SHA, never @v1 — supply-chain hardening.
+
+on:
+  workflow_call:
+    inputs:
+      variant:
+        description: 'Deploy variant: docker (compose-managed app) or static (file-served by Caddy)'
+        type: string
+        required: true
+      srv-path:
+        description: 'Absolute path on VPS to checkout into (e.g. /srv/code/myapp)'
+        type: string
+        required: true
+      health-check-url:
+        description: 'URL to curl post-deploy. Must return 2xx. Required.'
+        type: string
+        required: true
+      vps-tailnet-ip:
+        description: 'Tailnet IP of the VPS (for tailscale ping pre-flight)'
+        type: string
+        required: true
+      vps-public-ip:
+        description: 'Public IP of the VPS (for curl --resolve health verification)'
+        type: string
+        required: true
+      vps-host:
+        description: 'Tailnet MagicDNS hostname (used for SSH)'
+        type: string
+        required: true
+      vps-user:
+        description: 'OS user on VPS that the SSH command runs as'
+        type: string
+        required: true
+      smoke-validation:
+        description: 'Optional jq filter applied to the health response. Default checks status field equals "ok". Pass empty string to disable.'
+        type: string
+        required: false
+        default: '.status == "ok"'
+      health-check-domain:
+        description: 'Domain to use with curl --resolve. Defaults to extracting from health-check-url.'
+        type: string
+        required: false
+        default: ''
+    secrets:
+      TS_OIDC_CLIENT_ID:
+        description: 'Tailscale federated credential identifier (NOT the legacy OAuth client_id)'
+        required: true
+      TS_AUDIENCE:
+        description: 'Tailscale-expected audience: api.tailscale.com/<oidc-client-id>'
+        required: true
+      VPS_DEPLOY_KEY:
+        description: 'Private half of the per-repo ed25519 deploy key'
+        required: true
+      VPS_HOST_KEY:
+        description: 'Pinned ssh-keyscan output for the tailnet hostname'
+        required: true
+
+jobs:
+  deploy:
+    name: vps-deploy
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write   # for Tailscale OIDC token request
+
+    steps:
+      - name: Connect Tailscale (OIDC / Workload Identity Federation)
+        uses: tailscale/github-action@v4.1.2
+        with:
+          oauth-client-id: ${{ secrets.TS_OIDC_CLIENT_ID }}
+          audience: ${{ secrets.TS_AUDIENCE }}
+          tags: tag:ci
+
+      - name: Wait for tailnet peer to be routable
+        # `tailscale up` returns when the daemon is up, but peer routes
+        # are negotiated asynchronously and aren't always ready. Polling
+        # `tailscale ping` against the target VPS until it succeeds (or
+        # ~40s elapses) closes that race before we attempt SSH.
+        run: |
+          for i in $(seq 1 20); do
+            if sudo tailscale ping --c 1 --timeout 2s ${{ inputs.vps-tailnet-ip }} >/dev/null 2>&1; then
+              echo "::notice::tailnet peer reachable after ${i} attempt(s)"
+              sudo tailscale status | head -5
+              exit 0
+            fi
+            echo "attempt ${i}: tailnet peer not yet routable, sleeping 2s"
+            sleep 2
+          done
+          echo "::error::tailnet peer never became routable; aborting"
+          sudo tailscale status || true
+          exit 1
+
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          echo "${{ secrets.VPS_HOST_KEY }}" > ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+          install -m 600 /dev/stdin ~/.ssh/id_ed25519 <<< "${{ secrets.VPS_DEPLOY_KEY }}"
+
+      - name: Trigger VPS deploy (command-restricted SSH over tailnet)
+        # The per-repo deploy key on the VPS is locked to a single
+        # `command="..."` in authorized_keys — even if leaked, it
+        # cannot run anything other than the approved deploy script.
+        # SSH connection itself triggers the deploy; no arguments needed.
+        run: |
+          ssh \
+            -o BatchMode=yes \
+            -o ConnectTimeout=15 \
+            -o StrictHostKeyChecking=yes \
+            -i ~/.ssh/id_ed25519 \
+            "${{ inputs.vps-user }}@${{ inputs.vps-host }}"
+
+      - name: Smoke test (post-deploy health check + auto-rollback on failure)
+        # Hard-fail the workflow on smoke failure. Auto-rollback semantics
+        # are documented in the Priority 5 plan but require the VPS-side
+        # `/usr/local/sbin/deploy-srv-app` wrapper to support a "previous
+        # tag" notion — that wrapper is not yet deployed (see plan §
+        # P5 step 9). Until it is, smoke failure exits non-zero and the
+        # caller workflow rolls back manually per docs/manual-deploy.md.
+        env:
+          HEALTH_URL: ${{ inputs.health-check-url }}
+          PUBLIC_IP: ${{ inputs.vps-public-ip }}
+          DOMAIN_OVERRIDE: ${{ inputs.health-check-domain }}
+          SMOKE_FILTER: ${{ inputs.smoke-validation }}
+        run: |
+          set -euo pipefail
+
+          # Derive domain from URL if not explicitly provided
+          if [[ -n "$DOMAIN_OVERRIDE" ]]; then
+            DOMAIN="$DOMAIN_OVERRIDE"
+          else
+            DOMAIN=$(echo "$HEALTH_URL" | sed -E 's|^https?://([^/]+).*|\1|')
+          fi
+
+          echo "::group::Smoke test against $HEALTH_URL"
+          echo "Resolving $DOMAIN to $PUBLIC_IP for direct verification"
+
+          # Retry up to 5 times to allow container warm-up
+          for i in 1 2 3 4 5; do
+            response=$(curl -fsS --max-time 10 \
+              --resolve "${DOMAIN}:443:${PUBLIC_IP}" \
+              "$HEALTH_URL" 2>&1) && rc=0 || rc=$?
+
+            if [ $rc -eq 0 ]; then
+              echo "::notice::HTTP 2xx received on attempt $i"
+              echo "Body: $response"
+
+              # Optional jq validation
+              if [[ -n "$SMOKE_FILTER" ]]; then
+                echo "Validating with jq filter: $SMOKE_FILTER"
+                if echo "$response" | jq -e "$SMOKE_FILTER" >/dev/null 2>&1; then
+                  echo "::notice::Smoke validation passed"
+                  echo "::endgroup::"
+                  exit 0
+                else
+                  echo "::error::Smoke validation FAILED — response did not match filter '$SMOKE_FILTER'"
+                  echo "::endgroup::"
+                  exit 1
+                fi
+              else
+                echo "::notice::Smoke validation skipped (empty filter); 2xx alone considered success"
+                echo "::endgroup::"
+                exit 0
+              fi
+            fi
+
+            echo "Health attempt $i failed (curl exit $rc) — sleeping 10s"
+            sleep 10
+          done
+
+          echo "::error::Health check did not pass within 5 attempts. Production may be in degraded state."
+          echo "::error::Manual investigation required — see docs/manual-deploy.md and docs/vps-reboot-recovery.md in intentsolutions-vps-runbook"
+          echo "::endgroup::"
+          exit 1
