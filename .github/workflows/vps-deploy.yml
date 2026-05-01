@@ -141,6 +141,13 @@ jobs:
           echo "${{ secrets.VPS_HOST_KEY }}" > ~/.ssh/known_hosts
           chmod 644 ~/.ssh/known_hosts
           install -m 600 /dev/stdin ~/.ssh/id_ed25519 <<< "${{ secrets.VPS_DEPLOY_KEY }}"
+          # Debug: confirm secrets arrived (sizes only, no values revealed)
+          echo "::group::Secret-arrival debug"
+          echo "known_hosts bytes: $(wc -c < ~/.ssh/known_hosts)"
+          echo "known_hosts has intentsolutions line: $(grep -c '^intentsolutions ' ~/.ssh/known_hosts || true)"
+          echo "id_ed25519 bytes: $(wc -c < ~/.ssh/id_ed25519)"
+          echo "id_ed25519 first line check: $(head -1 ~/.ssh/id_ed25519 | grep -c BEGIN || true)"
+          echo "::endgroup::"
 
       - name: Trigger VPS deploy (command-restricted SSH over tailnet)
         # The per-repo deploy key on the VPS is locked to a single
