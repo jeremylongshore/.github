@@ -25,7 +25,7 @@ name: vps-deploy (reusable)
 #     test:                    # MANDATORY — pre-deploy gate
 #       runs-on: ubuntu-latest
 #       steps:
-#         - uses: actions/checkout@v4
+#         - uses: actions/checkout@v6
 #         - run: <repo's test command, e.g. pnpm test --run>
 #
 #     deploy:
