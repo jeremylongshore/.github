@@ -177,13 +177,12 @@ jobs:
             -i ~/.ssh/id_ed25519 \
             "${{ inputs.vps-user }}@${{ inputs.vps-host }}"
 
-      - name: Smoke test (post-deploy health check + auto-rollback on failure)
-        # Hard-fail the workflow on smoke failure. Auto-rollback semantics
-        # are documented in the Priority 5 plan but require the VPS-side
-        # `/usr/local/sbin/deploy-srv-app` wrapper to support a "previous
-        # tag" notion — that wrapper is not yet deployed (see plan §
-        # P5 step 9). Until it is, smoke failure exits non-zero and the
-        # caller workflow rolls back manually per docs/manual-deploy.md.
+      - name: Smoke test (post-deploy health check — hard-fails; no in-workflow auto-rollback yet)
+        # Renamed (Epic 1.6 .9.3): the step name must match what it asserts. This step performs a
+        # post-deploy HTTP health check and HARD-FAILS the workflow on failure — it does NOT auto-revert.
+        # Auto-rollback requires the VPS-side previous-image wrapper (Mission Control Epic 1.6 `ops/deploy/`,
+        # disposable-drill-proven; live install owner-gated). Until that wrapper is installed on the VPS,
+        # smoke failure exits non-zero and the caller rolls back manually per docs/manual-deploy.md.
         env:
           HEALTH_URL: ${{ inputs.health-check-url }}
           PUBLIC_IP: ${{ inputs.vps-public-ip }}
@@ -208,7 +207,7 @@ jobs:
               --resolve "${DOMAIN}:443:${PUBLIC_IP}" \
               "$HEALTH_URL" 2>&1) && rc=0 || rc=$?
 
-            if [ $rc -eq 0 ]; then
+            if [ "$rc" -eq 0 ]; then
               echo "::notice::HTTP 2xx received on attempt $i"
               echo "Body: $response"
 

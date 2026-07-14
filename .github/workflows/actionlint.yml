@@ -1,0 +1,20 @@
+name: actionlint
+# Epic 1.6 .9.3 — lint every workflow (incl. the reusable vps-deploy.yml) so a smoke/deploy step name
+# or a shellcheck defect is caught before it ships. Runs on PRs + pushes that touch workflows.
+on:
+  push:
+    paths: [".github/workflows/**"]
+  pull_request:
+    paths: [".github/workflows/**"]
+permissions:
+  contents: read
+jobs:
+  actionlint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run actionlint (self-hosted binary, pinned)
+        run: |
+          set -euo pipefail
+          bash <(curl -sSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash) 1.7.12
+          ./actionlint -color
