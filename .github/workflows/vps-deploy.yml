@@ -3,7 +3,7 @@ name: vps-deploy (reusable)
 # Reusable VPS-deploy workflow for jeremylongshore/* repos.
 #
 # This is the canonical deploy template adopted by Priority 5 of the
-# VPS-as-the-home program (intentsolutions-vps-runbook OPS-g6a).
+# Current authority: intent-solutions-io/intent-os ops/deploy (D90).
 #
 # Calling pattern (in your repo's `.github/workflows/deploy.yml`):
 #
@@ -235,6 +235,6 @@ jobs:
           done
 
           echo "::error::Health check did not pass within 5 attempts. Production may be in degraded state."
-          echo "::error::Manual investigation required — see docs/manual-deploy.md and docs/vps-reboot-recovery.md in intentsolutions-vps-runbook"
+          echo "::error::Manual investigation required — see ops/deploy/runbooks and ops/host/reboot-recovery.md in intent-os"
           echo "::endgroup::"
           exit 1
