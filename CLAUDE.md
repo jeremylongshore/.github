@@ -20,17 +20,17 @@ This file provides guidance to Claude Code when working in this repository.
 Caller workflows MUST:
 1. Declare `permissions: id-token: write` at the workflow or job level (Tailscale OIDC needs the GitHub-issued JWT).
 2. Run a `test` job before the deploy job, with `needs: test` on the deploy job. The reusable workflow does not enforce this — it's a contract the caller honors.
-3. **Pin the reusable workflow by 40-char SHA**, never `@v1` or `@main`. Supply-chain hardening per the [VPS-as-the-home program plan](https://github.com/jeremylongshore/intentsolutions-vps-runbook/blob/main/plans/2026-05-01-vps-as-the-home/00-plan.md) § Priority 5.
+3. **Pin the reusable workflow by 40-char SHA**, never `@v1` or `@main`. Current deployment authority is [`intent-os/ops/deploy`](https://github.com/intent-solutions-io/intent-os/tree/main/ops/deploy).
 4. Use `secrets: inherit` (or list each TS_*/VPS_* secret explicitly) so the reusable workflow can read repo secrets.
 
 Full calling pattern is documented in the workflow file's header comment.
 
 ## Cross-references
 
-- Program plan (canonical): `~/000-projects/intentsolutions-vps-runbook/plans/2026-05-01-vps-as-the-home/00-plan.md` § Priority 5
+- Deployment authority: `~/000-projects/intent-os/ops/deploy/`
 - Pilot caller (braves-booth): `https://github.com/jeremylongshore/braves-booth/blob/main/.github/workflows/deploy.yml`
 - Bead: `OPS-g6a` (P5 reusable workflow + braves refactor)
-- Tailscale OIDC trust setup: `~/000-projects/intentsolutions-vps-runbook/docs/secrets-inventory.md` § Tailscale OIDC client credential
+- Tailscale OIDC trust and secret references: `~/000-projects/intent-os/ops/host/` (values never enter docs)
 
 ## Bead workflow
 
