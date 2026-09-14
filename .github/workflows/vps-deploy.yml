@@ -168,14 +168,18 @@ jobs:
         # The per-repo deploy key on the VPS is locked to a single
         # `command="..."` in authorized_keys — even if leaked, it
         # cannot run anything other than the approved deploy script.
-        # SSH connection itself triggers the deploy; no arguments needed.
+        # The immutable caller revision is available to the forced command as
+        # SSH_ORIGINAL_COMMAND. Existing deploy scripts may ignore it; scripts
+        # that bind deployment to the tested revision must validate it as a
+        # full hexadecimal commit ID before fetching it.
         run: |
           ssh \
             -o BatchMode=yes \
             -o ConnectTimeout=15 \
             -o StrictHostKeyChecking=yes \
             -i ~/.ssh/id_ed25519 \
-            "${{ inputs.vps-user }}@${{ inputs.vps-host }}"
+            "${{ inputs.vps-user }}@${{ inputs.vps-host }}" \
+            "${{ github.sha }}"
 
       - name: Smoke test (post-deploy health check — hard-fails; no in-workflow auto-rollback yet)
         # Renamed (Epic 1.6 .9.3): the step name must match what it asserts. This step performs a
