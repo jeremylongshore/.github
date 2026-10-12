@@ -3,9 +3,9 @@ name: actionlint
 # or a shellcheck defect is caught before it ships. Runs on PRs + pushes that touch workflows.
 on:
   push:
-    paths: [".github/workflows/**"]
+    paths: [".github/workflows/**", "tests/**"]
   pull_request:
-    paths: [".github/workflows/**"]
+    paths: [".github/workflows/**", "tests/**"]
 permissions:
   contents: read
 jobs:
@@ -13,6 +13,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - name: Test pinned SSH transport with disposable local keys
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y openssh-server
+          sudo mkdir -p /run/sshd
+          python3 -m unittest discover -s tests -v
       - name: Run actionlint (self-hosted binary, pinned)
         run: |
           set -euo pipefail
