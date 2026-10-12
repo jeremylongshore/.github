@@ -37,7 +37,7 @@ name: vps-deploy (reusable)
 #         health-check-url:  https://example.com/api/health
 #         vps-tailnet-ip:    100.88.144.55   # tailnet IP of the VPS
 #         vps-public-ip:     167.86.106.29   # used for Caddy --resolve verification
-#         vps-host:          intentsolutions  # tailnet MagicDNS name
+#         vps-host:          intentsolutions  # alias in the trusted host-key pin
 #         vps-user:          intentsolutions  # OS user on VPS
 #         smoke-validation:  '.status == "ok"'   # jq filter on health response
 #       secrets: inherit
@@ -68,7 +68,7 @@ on:
         type: string
         required: true
       vps-host:
-        description: 'Tailnet MagicDNS hostname (used for SSH)'
+        description: 'Host-key alias for the VPS; SSH connects through vps-tailnet-ip'
         type: string
         required: true
       vps-user:
@@ -96,7 +96,7 @@ on:
         description: 'Private half of the per-repo ed25519 deploy key'
         required: true
       VPS_HOST_KEY:
-        description: 'Pinned ssh-keyscan output for the tailnet hostname'
+        description: 'Trusted known_hosts entry matching vps-host or vps-tailnet-ip (hashed entries supported)'
         required: true
 
 jobs:
@@ -135,34 +135,38 @@ jobs:
           exit 1
 
       - name: Configure SSH
-        # Two-step host-key story:
-        #
-        # 1. If the caller provided VPS_HOST_KEY, write it to known_hosts.
-        #    This is the strict-pin path — same posture as the original
-        #    inline workflow.
-        # 2. Then run ssh-keyscan against the live tailnet hostname and
-        #    APPEND its output to known_hosts. This guarantees the
-        #    hostname the SSH command will use (`vps-host` input) has a
-        #    matching entry regardless of how the secret was originally
-        #    formatted (hashed-with-whitespace, IP-only, fully-qualified,
-        #    etc. all work because we add the literal-hostname entry too).
-        #
-        # Why this is safe: the tailnet itself authenticates the VPS.
-        # Tailscale's MagicDNS only resolves `vps-host` to a node that
-        # has authenticated to the tailnet via the same control plane.
-        # MITM on the tailnet is not a real threat model for this
-        # deployment.
+        id: ssh
+        # Use only the caller's trusted pin. Live keyscan both depended on
+        # MagicDNS being ready and silently added a second trust source.
+        # HostKeyAlias preserves hostname pins while transport uses the IP.
+        env:
+          VPS_HOST: ${{ inputs.vps-host }}
+          VPS_TAILNET_IP: ${{ inputs.vps-tailnet-ip }}
+          VPS_HOST_KEY: ${{ secrets.VPS_HOST_KEY }}
+          VPS_DEPLOY_KEY: ${{ secrets.VPS_DEPLOY_KEY }}
         run: |
-          mkdir -p ~/.ssh
-          chmod 700 ~/.ssh
-          # Strict-pin from secret (if present)
-          echo "${{ secrets.VPS_HOST_KEY }}" > ~/.ssh/known_hosts
-          # Live keyscan — appends fresh entry for the literal hostname
-          # SSH will look up. -t ed25519 because the deploy key is ed25519
-          # and the VPS server side advertises ed25519.
-          ssh-keyscan -t ed25519 "${{ inputs.vps-host }}" 2>/dev/null >> ~/.ssh/known_hosts
-          chmod 644 ~/.ssh/known_hosts
-          install -m 600 /dev/stdin ~/.ssh/id_ed25519 <<< "${{ secrets.VPS_DEPLOY_KEY }}"
+          set -euo pipefail
+          umask 077
+          ssh_dir="$RUNNER_TEMP/vps-deploy-ssh"
+          mkdir -p "$ssh_dir"
+          chmod 700 "$ssh_dir"
+          printf '%s\n' "$VPS_HOST_KEY" > "$ssh_dir/known_hosts"
+          chmod 600 "$ssh_dir/known_hosts"
+          if ssh-keygen -F "$VPS_HOST" -f "$ssh_dir/known_hosts" >/dev/null; then
+            pinned_host="$VPS_HOST"
+          elif ssh-keygen -F "$VPS_TAILNET_IP" -f "$ssh_dir/known_hosts" >/dev/null; then
+            pinned_host="$VPS_TAILNET_IP"
+          else
+            echo "::error::VPS_HOST_KEY must pin vps-host or vps-tailnet-ip; refusing live key discovery"
+            exit 1
+          fi
+          printf '%s\n' "$VPS_DEPLOY_KEY" > "$ssh_dir/id_ed25519"
+          chmod 600 "$ssh_dir/id_ed25519"
+          {
+            printf 'host-key-alias=%s\n' "$pinned_host"
+            printf 'identity-file=%s\n' "$ssh_dir/id_ed25519"
+            printf 'known-hosts-file=%s\n' "$ssh_dir/known_hosts"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Trigger VPS deploy (command-restricted SSH over tailnet)
         # The per-repo deploy key on the VPS is locked to a single
@@ -172,14 +176,26 @@ jobs:
         # SSH_ORIGINAL_COMMAND. Existing deploy scripts may ignore it; scripts
         # that bind deployment to the tested revision must validate it as a
         # full hexadecimal commit ID before fetching it.
+        env:
+          VPS_TAILNET_IP: ${{ inputs.vps-tailnet-ip }}
+          VPS_USER: ${{ inputs.vps-user }}
+          SSH_HOST_KEY_ALIAS: ${{ steps.ssh.outputs.host-key-alias }}
+          SSH_IDENTITY_FILE: ${{ steps.ssh.outputs.identity-file }}
+          SSH_KNOWN_HOSTS_FILE: ${{ steps.ssh.outputs.known-hosts-file }}
+          DEPLOY_REVISION: ${{ github.sha }}
         run: |
           ssh \
             -o BatchMode=yes \
             -o ConnectTimeout=15 \
             -o StrictHostKeyChecking=yes \
-            -i ~/.ssh/id_ed25519 \
-            "${{ inputs.vps-user }}@${{ inputs.vps-host }}" \
-            "${{ github.sha }}"
+            -o IdentitiesOnly=yes \
+            -o "HostKeyAlias=$SSH_HOST_KEY_ALIAS" \
+            -o "UserKnownHostsFile=$SSH_KNOWN_HOSTS_FILE" \
+            -o GlobalKnownHostsFile=/dev/null \
+            -o UpdateHostKeys=no \
+            -i "$SSH_IDENTITY_FILE" \
+            "$VPS_USER@$VPS_TAILNET_IP" \
+            "$DEPLOY_REVISION"
 
       - name: Smoke test (post-deploy health check — hard-fails; no in-workflow auto-rollback yet)
         # Renamed (Epic 1.6 .9.3): the step name must match what it asserts. This step performs a

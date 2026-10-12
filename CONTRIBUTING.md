@@ -97,6 +97,21 @@ Every change ships with the evidence that it works. Add or update tests alongsid
 repo's suite before you push; link the result in your PR. If you're adding a capability, add the test
 that proves it; if you're fixing a bug, add the test that reproduces it.
 
+For this shared-workflow repository, run `actionlint` and
+`python3 -m unittest discover -s tests -v`. The SSH transport suite requires
+OpenSSH client/server; see [`tests/README.md`](tests/README.md).
+
+## VPS workflow host pins
+
+The reusable deployment workflow connects to `vps-tailnet-ip`, so SSH does not
+depend on MagicDNS becoming ready. `VPS_HOST_KEY` must contain a trusted
+`known_hosts` entry for `vps-host` or that IP; hashed entries are supported.
+The hostname entry takes precedence when both exist. SSH verifies that pin with
+`HostKeyAlias`, and never appends a key discovered from the live connection.
+An absent, unrelated, or mismatched pin fails closed. Obtain and verify the key
+through the existing trusted host-management channel before updating the secret.
+Consumers adopt changes only by updating their pinned workflow SHA after review.
+
 ## Docs
 
 If your change affects behavior, update the docs in the same PR — a change and its documentation
