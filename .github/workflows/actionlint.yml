@@ -3,9 +3,9 @@ name: actionlint
 # or a shellcheck defect is caught before it ships. Runs on PRs + pushes that touch workflows.
 on:
   push:
-    paths: [".github/workflows/**", "tests/**"]
+    paths: [".github/workflows/**", "tests/**", "README.md"]
   pull_request:
-    paths: [".github/workflows/**", "tests/**"]
+    paths: [".github/workflows/**", "tests/**", "README.md"]
 permissions:
   contents: read
 jobs:
