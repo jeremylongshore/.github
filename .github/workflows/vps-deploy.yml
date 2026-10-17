@@ -108,6 +108,11 @@ on:
         type: boolean
         required: false
         default: true
+      send-revision:
+        description: 'Pass the caller commit (github.sha) to the forced command as SSH_ORIGINAL_COMMAND. Set false for a forced command that accepts only an empty command and picks the commit itself (braves-booth deploy-scorecardecho-forced).'
+        type: boolean
+        required: false
+        default: true
     secrets:
       TS_OIDC_CLIENT_ID:
         description: 'Tailscale federated credential identifier (NOT the legacy OAuth client_id). Needed only when join-tailnet is true.'
@@ -223,7 +228,8 @@ jobs:
         # The immutable caller revision is available to the forced command as
         # SSH_ORIGINAL_COMMAND. Existing deploy scripts may ignore it; scripts
         # that bind deployment to the tested revision must validate it as a
-        # full hexadecimal commit ID before fetching it.
+        # full hexadecimal commit ID before fetching it. With send-revision
+        # false nothing is sent, for a forced command that refuses any command.
         env:
           VPS_TAILNET_IP: ${{ inputs.vps-tailnet-ip }}
           VPS_USER: ${{ inputs.vps-user }}
@@ -231,7 +237,10 @@ jobs:
           SSH_IDENTITY_FILE: ${{ steps.ssh.outputs.identity-file }}
           SSH_KNOWN_HOSTS_FILE: ${{ steps.ssh.outputs.known-hosts-file }}
           DEPLOY_REVISION: ${{ github.sha }}
+          SEND_REVISION: ${{ inputs.send-revision }}
         run: |
+          remote_command=()
+          if [ "$SEND_REVISION" = true ]; then remote_command=("$DEPLOY_REVISION"); fi
           ssh \
             -o BatchMode=yes \
             -o ConnectTimeout=15 \
@@ -243,7 +252,7 @@ jobs:
             -o UpdateHostKeys=no \
             -i "$SSH_IDENTITY_FILE" \
             "$VPS_USER@$VPS_TAILNET_IP" \
-            "$DEPLOY_REVISION"
+            "${remote_command[@]}"
 
       - name: Smoke test (post-deploy health check — hard-fails; no in-workflow auto-rollback yet)
         # Renamed (Epic 1.6 .9.3): the step name must match what it asserts. This step performs a
