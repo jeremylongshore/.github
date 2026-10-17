@@ -13,12 +13,12 @@ This file provides guidance to Claude Code when working in this repository.
 
 | Workflow | Purpose | Callers |
 |---|---|---|
-| [`vps-deploy.yml`](.github/workflows/vps-deploy.yml) | Canonical Tailscale-OIDC + SSH-over-tailnet deploy to the Contabo VPS at `intentsolutions` (167.86.106.29). Includes hard-fail smoke check. | `braves-booth` (current); rolling out to all P7 GCP-exodus repos. |
+| [`vps-deploy.yml`](.github/workflows/vps-deploy.yml) | Canonical command-restricted SSH-over-tailnet deploy to the Contabo VPS at `intentsolutions` (167.86.106.29), with a hard-fail smoke check. Runs either on a GitHub-hosted runner that joins the tailnet through Tailscale OIDC (`join-tailnet: true`, the default) or on a self-hosted `vps-deploy` runner on the Buzz host, which is already on the tailnet (`join-tailnet: false`). | Every VPS-deployed `jeremylongshore/*` site. |
 
 ### Calling convention
 
 Caller workflows MUST:
-1. Declare `permissions: id-token: write` at the workflow or job level (Tailscale OIDC needs the GitHub-issued JWT).
+1. Declare `permissions: id-token: write` at the workflow or job level when `join-tailnet` is true (Tailscale OIDC needs the GitHub-issued JWT). A caller on the self-hosted `vps-deploy` runner passes `runs-on: '["self-hosted","linux","vps-deploy"]'` and `join-tailnet: false`; its TS_* secrets are then unused.
 2. Run a `test` job before the deploy job, with `needs: test` on the deploy job. The reusable workflow does not enforce this — it's a contract the caller honors.
 3. **Pin the reusable workflow by 40-char SHA**, never `@v1` or `@main`. Current deployment authority is [`intent-os/ops/deploy`](https://github.com/intent-solutions-io/intent-os/tree/main/ops/deploy).
 4. Use `secrets: inherit` (or list each TS_*/VPS_* secret explicitly) so the reusable workflow can read repo secrets.
