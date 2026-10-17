@@ -97,7 +97,7 @@ class DeploySSHTests(unittest.TestCase):
                 self.assertFalse((self.root / "vps-deploy-ssh/id_ed25519").exists())
                 self.assertNotIn("PRIVATE KEY", result.stdout + result.stderr)
 
-    def start_server(self):
+    def start_server(self, force_command="/bin/echo integration-reached"):
         server = shutil.which("sshd") or "/usr/sbin/sshd"
         self.assertTrue(Path(server).exists(), "openssh-server is required for transport tests")
         with socket.socket() as probe:
@@ -114,7 +114,7 @@ class DeploySSHTests(unittest.TestCase):
             KbdInteractiveAuthentication no
             UsePAM no
             StrictModes yes
-            ForceCommand /bin/echo integration-reached
+            ForceCommand {force_command}
             LogLevel VERBOSE
         """))
         log = (self.root / "sshd.log").open("w")
@@ -142,8 +142,9 @@ class DeploySSHTests(unittest.TestCase):
                            + shlex.quote(str(port)) + ' "$@"\n')
         wrapper.chmod(0o700)
 
-    def deploy(self):
-        self.env.update(SSH_IDENTITY_FILE=self.outputs["identity-file"],
+    def deploy(self, send_revision="true"):
+        self.env.update(SEND_REVISION=send_revision,
+                        SSH_IDENTITY_FILE=self.outputs["identity-file"],
                         SSH_KNOWN_HOSTS_FILE=self.outputs["known-hosts-file"],
                         SSH_HOST_KEY_ALIAS=self.outputs["host-key-alias"])
         script = step_script("Trigger VPS deploy (command-restricted SSH over tailnet)")
@@ -159,6 +160,29 @@ class DeploySSHTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0,
                          result.stderr + (self.root / "sshd.log").read_text())
         self.assertEqual(result.stdout.strip(), "integration-reached")
+
+    def report_original_command(self):
+        script = self.root / "report-command"
+        script.write_text('#!/bin/sh\necho "cmd=[$SSH_ORIGINAL_COMMAND]"\n')
+        script.chmod(0o755)
+        self.start_server(force_command=str(script))
+        result = self.configure()
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_revision_reaches_the_forced_command_by_default(self):
+        self.report_original_command()
+        result = self.deploy()
+        self.assertEqual(result.returncode, 0,
+                         result.stderr + (self.root / "sshd.log").read_text())
+        self.assertEqual(result.stdout.strip(), f"cmd=[{REVISION}]")
+
+    def test_send_revision_false_sends_an_empty_command(self):
+        # braves-booth's forced command refuses anything but an empty command (exit 64).
+        self.report_original_command()
+        result = self.deploy(send_revision="false")
+        self.assertEqual(result.returncode, 0,
+                         result.stderr + (self.root / "sshd.log").read_text())
+        self.assertEqual(result.stdout.strip(), "cmd=[]")
 
     def test_real_ssh_rejects_wrong_pinned_key(self):
         self.start_server()
