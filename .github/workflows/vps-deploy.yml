@@ -15,7 +15,7 @@ name: vps-deploy (reusable)
 #
 #   permissions:
 #     contents: read
-#     id-token: write   # REQUIRED — Tailscale OIDC token request
+#     id-token: write   # needed only when join-tailnet is true (Tailscale OIDC)
 #
 #   concurrency:
 #     group: deploy-vps-${{ github.repository }}
@@ -40,7 +40,20 @@ name: vps-deploy (reusable)
 #         vps-host:          intentsolutions  # alias in the trusted host-key pin
 #         vps-user:          intentsolutions  # OS user on VPS
 #         smoke-validation:  '.status == "ok"'   # jq filter on health response
+#         runs-on:           '["self-hosted","linux","vps-deploy"]'
+#         join-tailnet:      false
 #       secrets: inherit
+#
+# Two runner modes:
+#   * join-tailnet: true (the default) runs on a GitHub-hosted runner that joins
+#     the tailnet as an ephemeral node through Tailscale OIDC. It needs the
+#     TS_OIDC_CLIENT_ID and TS_AUDIENCE secrets and a tailnet that can mint auth
+#     keys.
+#   * join-tailnet: false runs on a self-hosted runner whose host is already on
+#     the tailnet: the `vps-deploy` runners on the Buzz host
+#     (intent-os decision-log/071). No node is created and the TS_* secrets are
+#     unused. This mode keeps deploys working while the tailnet cannot mint new
+#     keys (Tailscale returned 402 from 2026-10-14).
 #
 # Pin by SHA, never @v1 — supply-chain hardening.
 
@@ -85,13 +98,23 @@ on:
         type: string
         required: false
         default: ''
+      runs-on:
+        description: 'runs-on for the deploy job, as JSON. Default "ubuntu-latest". Self-hosted on the Buzz host: ["self-hosted","linux","vps-deploy"] with join-tailnet false.'
+        type: string
+        required: false
+        default: '"ubuntu-latest"'
+      join-tailnet:
+        description: 'Join the tailnet as an ephemeral node through Tailscale OIDC. Set false on a self-hosted runner whose host is already on the tailnet.'
+        type: boolean
+        required: false
+        default: true
     secrets:
       TS_OIDC_CLIENT_ID:
-        description: 'Tailscale federated credential identifier (NOT the legacy OAuth client_id)'
-        required: true
+        description: 'Tailscale federated credential identifier (NOT the legacy OAuth client_id). Needed only when join-tailnet is true.'
+        required: false
       TS_AUDIENCE:
-        description: 'Tailscale-expected audience: api.tailscale.com/<oidc-client-id>'
-        required: true
+        description: 'Tailscale-expected audience: api.tailscale.com/<oidc-client-id>. Needed only when join-tailnet is true.'
+        required: false
       VPS_DEPLOY_KEY:
         description: 'Private half of the per-repo ed25519 deploy key'
         required: true
@@ -102,13 +125,14 @@ on:
 jobs:
   deploy:
     name: vps-deploy
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
     permissions:
       contents: read
-      id-token: write   # for Tailscale OIDC token request
+      id-token: write   # for Tailscale OIDC token request (join-tailnet only)
 
     steps:
       - name: Connect Tailscale (OIDC / Workload Identity Federation)
+        if: ${{ inputs.join-tailnet }}
         uses: tailscale/github-action@v4.1.2
         with:
           oauth-client-id: ${{ secrets.TS_OIDC_CLIENT_ID }}
@@ -120,6 +144,7 @@ jobs:
         # are negotiated asynchronously and aren't always ready. Polling
         # `tailscale ping` against the target VPS until it succeeds (or
         # ~40s elapses) closes that race before we attempt SSH.
+        if: ${{ inputs.join-tailnet }}
         run: |
           for i in $(seq 1 20); do
             if sudo tailscale ping --c 1 --timeout 2s ${{ inputs.vps-tailnet-ip }} >/dev/null 2>&1; then
@@ -132,6 +157,29 @@ jobs:
           done
           echo "::error::tailnet peer never became routable; aborting"
           sudo tailscale status || true
+          exit 1
+
+      - name: Check the VPS is reachable from this runner
+        # Self-hosted mode: this runner's host is already a tailnet member, so no
+        # node is created and nothing is minted. A plain TCP connect to the VPS
+        # SSH port proves the route before SSH is attempted.
+        if: ${{ !inputs.join-tailnet }}
+        env:
+          VPS_TAILNET_IP: ${{ inputs.vps-tailnet-ip }}
+          VPS_SSH_PORT: '22'
+          REACH_ATTEMPTS: '10'
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 "$REACH_ATTEMPTS"); do
+            # shellcheck disable=SC2016  # $0 and $1 are expanded by the inner bash, on purpose
+            if timeout 3 bash -c ': < "/dev/tcp/$0/$1"' "$VPS_TAILNET_IP" "$VPS_SSH_PORT" 2>/dev/null; then
+              echo "::notice::VPS ${VPS_TAILNET_IP}:${VPS_SSH_PORT} reachable after ${i} attempt(s)"
+              exit 0
+            fi
+            echo "attempt ${i}: ${VPS_TAILNET_IP}:${VPS_SSH_PORT} not reachable"
+            if [ "$i" -lt "$REACH_ATTEMPTS" ]; then sleep 2; fi
+          done
+          echo "::error::VPS ${VPS_TAILNET_IP}:${VPS_SSH_PORT} is not reachable from this runner. A self-hosted deploy runner must run on a host that is already on the tailnet."
           exit 1
 
       - name: Configure SSH

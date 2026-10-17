@@ -9,3 +9,7 @@ only to loopback on a temporary port. Correct pins permit the test command;
 wrong pins reject it. No VPS, deployment key, or network beyond loopback is used.
 Temporary files live under the current user's home so the test server can keep
 OpenSSH's `StrictModes` checks enabled; cleanup stops the server and removes them.
+
+The runner-mode tests cover `join-tailnet: false`: the reachability step passes
+against a loopback listener, fails after its bounded attempts on a closed port,
+and the Tailscale steps are gated on `join-tailnet`.

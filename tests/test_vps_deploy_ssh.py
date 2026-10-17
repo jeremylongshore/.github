@@ -170,5 +170,63 @@ class DeploySSHTests(unittest.TestCase):
         self.assertIn("Host key verification failed", result.stderr)
 
 
+def step_lines(name):
+    lines = WORKFLOW.read_text().splitlines()
+    start = lines.index("      - name: " + name)
+    end = next((i for i in range(start + 1, len(lines))
+                if lines[i].startswith("      - ")), len(lines))
+    return lines[start:end]
+
+
+class RunnerModeTests(unittest.TestCase):
+    """join-tailnet: false runs on a host already on the tailnet and mints nothing."""
+
+    REACH = "Check the VPS is reachable from this runner"
+
+    def reach(self, port, attempts="2"):
+        script = step_script(self.REACH)
+        self.assertNotIn("${{", script)
+        env = dict(os.environ, VPS_TAILNET_IP="127.0.0.1",
+                   VPS_SSH_PORT=str(port), REACH_ATTEMPTS=attempts)
+        return subprocess.run(["bash", "-euo", "pipefail", "-c", script],
+                              env=env, capture_output=True, text=True, timeout=30)
+
+    def test_reachable_port_passes_on_first_attempt(self):
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            listener.listen()
+            result = self.reach(listener.getsockname()[1])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("reachable after 1 attempt(s)", result.stdout)
+
+    def test_closed_port_fails_after_bounded_attempts(self):
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+        result = self.reach(port, attempts="3")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.stdout.count("not reachable"), 4)  # 3 attempts + the error
+        self.assertIn("already on the tailnet", result.stdout)
+
+    def test_tailscale_steps_run_only_when_joining(self):
+        for name in ("Connect Tailscale (OIDC / Workload Identity Federation)",
+                     "Wait for tailnet peer to be routable"):
+            with self.subTest(step=name):
+                self.assertIn("        if: ${{ inputs.join-tailnet }}", step_lines(name))
+        self.assertIn("        if: ${{ !inputs.join-tailnet }}", step_lines(self.REACH))
+
+    def test_runner_and_secrets_follow_the_mode(self):
+        text = WORKFLOW.read_text()
+        self.assertIn("    runs-on: ${{ fromJSON(inputs.runs-on) }}", text)
+        self.assertIn("        default: '\"ubuntu-latest\"'", text)
+        secrets = text.split("    secrets:", 1)[1].split("\njobs:", 1)[0]
+        for name in ("TS_OIDC_CLIENT_ID", "TS_AUDIENCE"):
+            block = secrets.split(name + ":", 1)[1].split("\n      ", 3)
+            self.assertIn("required: false", "\n".join(block[:3]), name)
+        for name in ("VPS_DEPLOY_KEY", "VPS_HOST_KEY"):
+            block = secrets.split(name + ":", 1)[1].split("\n      ", 3)
+            self.assertIn("required: true", "\n".join(block[:3]), name)
+
+
 if __name__ == "__main__":
     unittest.main()
